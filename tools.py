@@ -19,21 +19,13 @@ def _tokens(text: str) -> set[str]:
 
 
 def _size_tokens(value: str) -> set[str]:
-    """
-    Split a size into exact tokens.
-
-    Examples:
-        "S/M" -> {"s", "m"}
-        "US 9" -> {"us", "9"}
-        "XL" -> {"xl"}
-    """
+    """Split a size into exact tokens."""
     value = (value or "").strip().lower()
 
     if not value:
         return set()
 
     parts = re.split(r"[/,\s]+", value)
-
     return {part.strip() for part in parts if part.strip()}
 
 
@@ -41,8 +33,48 @@ def _size_matches(requested: str, listing_size: str) -> bool:
     """Return True when the requested size matches an exact size token."""
     requested_tokens = _size_tokens(requested)
     listing_tokens = _size_tokens(listing_size)
-
     return bool(requested_tokens & listing_tokens)
+
+
+def _match_score(description: str, listing: dict) -> int:
+    """
+    Rank listings by relevance.
+
+    Improvement for Unit 4:
+    title and style-tag matches count more than incidental description matches.
+    An exact query phrase in the title or style tags gets an additional boost.
+    """
+    query_words = _tokens(description)
+
+    title = str(listing.get("title", ""))
+    style_tags = " ".join(listing.get("style_tags") or [])
+    listing_description = str(listing.get("description", ""))
+    category = str(listing.get("category", ""))
+    colors = " ".join(listing.get("colors") or [])
+    brand = str(listing.get("brand") or "")
+
+    title_words = _tokens(title)
+    style_words = _tokens(style_tags)
+    description_words = _tokens(listing_description)
+    other_words = _tokens(" ".join([category, colors, brand]))
+
+    score = 0
+    score += 4 * len(query_words & title_words)
+    score += 3 * len(query_words & style_words)
+    score += 1 * len(query_words & description_words)
+    score += 1 * len(query_words & other_words)
+
+    phrase = " ".join(re.findall(r"[a-z0-9]+", (description or "").lower()))
+    normalized_title = " ".join(re.findall(r"[a-z0-9]+", title.lower()))
+    normalized_tags = " ".join(re.findall(r"[a-z0-9]+", style_tags.lower()))
+
+    if phrase and phrase in normalized_title:
+        score += 8
+
+    if phrase and phrase in normalized_tags:
+        score += 6
+
+    return score
 
 
 def search_listings(
@@ -51,51 +83,31 @@ def search_listings(
     max_price: float | None = None,
 ) -> list[dict]:
     """
-    Search listings by keywords, optional size, and optional maximum price.
+    Search listings by relevance, optional size, and optional maximum price.
 
-    Returns matching listing dictionaries ordered by keyword score.
+    Returns matching listing dictionaries ordered by relevance.
     Returns [] when nothing matches.
     """
 
-    query_words = _tokens(description)
     scored_results = []
 
     for listing in load_listings():
 
-        # Price filter
         if max_price is not None:
             if float(listing.get("price", 0)) > max_price:
                 continue
 
-        # Size filter
         if size:
             listing_size = str(listing.get("size", ""))
 
             if not _size_matches(size, listing_size):
                 continue
 
-        # Build searchable text from useful listing fields
-        searchable_parts = [
-            listing.get("title", ""),
-            listing.get("description", ""),
-            listing.get("category", ""),
-            " ".join(listing.get("style_tags") or []),
-            " ".join(listing.get("colors") or []),
-            listing.get("brand") or "",
-        ]
-
-        listing_words = _tokens(
-            " ".join(str(part) for part in searchable_parts)
-        )
-
-        # Simple keyword overlap score
-        score = len(query_words & listing_words)
+        score = _match_score(description, listing)
 
         if score > 0:
             scored_results.append((score, listing))
 
-    # Highest keyword score first.
-    # Price is used as a tie breaker.
     scored_results.sort(
         key=lambda result: (
             -result[0],
@@ -110,11 +122,7 @@ def search_listings(
 
 
 def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
-    """
-    Suggest one or two outfits using the selected thrift item.
-
-    If the wardrobe is empty, return general styling advice.
-    """
+    """Suggest one or two outfits using the selected thrift item."""
 
     wardrobe_items = wardrobe.get("items", [])
 
@@ -137,7 +145,6 @@ The user has no saved wardrobe items.
 Give one or two concise general outfit ideas using common clothing
 categories. Do not claim that the user already owns any specific item.
 """
-
         return generate(prompt).strip()
 
     wardrobe_text = "\n".join(
@@ -170,9 +177,7 @@ Do not invent wardrobe pieces that are not listed.
 
 
 def create_fit_card(outfit: str, new_item: dict) -> str:
-    """
-    Create a short social caption for the selected thrift item.
-    """
+    """Create a short social caption for the selected thrift item."""
 
     if not outfit or not outfit.strip():
         return (
